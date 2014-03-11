@@ -10,12 +10,12 @@ type ('a, 'elt) bigarray = ('a, 'elt, Bigarray.c_layout) A1.t
 (* TODO: existentialize 'ke and 've? Needs GADT syntax? *)
 type ('k, 'ke, 'v, 've) t = {
   mutable count: int;
-  buckets: (int, Bigarray.int_elt) bigarray;
+  mutable buckets: (int, Bigarray.int_elt) bigarray;
 
   (* These three encode an array of ('k, 'v, int) *)
-  keys: ('k, 'ke) bigarray;
-  values: ('v, 've) bigarray;
-  nexts: (int, Bigarray.int_elt) bigarray;
+  mutable keys: ('k, 'ke) bigarray;
+  mutable values: ('v, 've) bigarray;
+  mutable nexts: (int, Bigarray.int_elt) bigarray;
 
   mutable first_free: int;
 }
@@ -90,7 +90,37 @@ let fold f t =
 let iter f t =
   fold (fun k v () -> f k v) t ()
 
-let access key f t =
+
+let rec double_capacity t =
+  let old = {
+      count = t.count;
+      buckets = t.buckets;
+      keys = t.keys;
+      values = t.values;
+      nexts = t.nexts;
+      first_free = t.first_free;
+    }
+  in
+  t.buckets <- A1.create Bigarray.int Bigarray.c_layout
+                 (2 * A1.dim t.buckets);
+  let data_count = 2 * A1.dim t.keys in
+  t.keys <- A1.create (A1.kind t.keys) Bigarray.c_layout data_count;
+  t.values <- A1.create (A1.kind t.values) Bigarray.c_layout data_count;
+  t.nexts <- A1.create Bigarray.int Bigarray.c_layout data_count;
+  t.first_free <- 0;
+
+  A1.fill t.buckets end_of_list;
+  A1.fill t.nexts subsequent_pos;
+  t.nexts.{data_count - 1} <- end_of_list;
+
+  (* TODO: inefficient! *)
+  iter (fun k v ->
+      access k (function
+                  | None -> Replace v, ()
+                  | Some _ -> failwith "WTF") t
+    ) old
+
+and access key f t =
   let bucket = Hashtbl.hash key in
   let rec find_in_bucket ow pos =
     if pos = end_of_list
