@@ -91,7 +91,16 @@ let iter f t =
   fold (fun k v () -> f k v) t ()
 
 
-let rec double_capacity t =
+let add_no_dupe_and_space_check bucket key value t =
+  let freepos = t.first_free in
+  t.first_free <- next_pos t freepos;
+  t.nexts.{freepos} <- t.buckets.{bucket};
+  t.buckets.{bucket} <- freepos;
+  t.keys.{freepos} <- key;
+  t.values.{freepos} <- value;
+  t.count <- t.count + 1
+
+let double_capacity t =
   let old = {
       count = t.count;
       buckets = t.buckets;
@@ -113,14 +122,11 @@ let rec double_capacity t =
   A1.fill t.nexts subsequent_pos;
   t.nexts.{data_count - 1} <- end_of_list;
 
-  (* TODO: inefficient! *)
   iter (fun k v ->
-      access k (function
-                  | None -> Replace v, ()
-                  | Some _ -> failwith "WTF") t
-    ) old
+          add_no_dupe_and_space_check (Hashtbl.hash k) k v t) old
 
-and access key f t =
+
+let access key f t =
   let bucket = Hashtbl.hash key in
   let rec find_in_bucket ow pos =
     if pos = end_of_list
@@ -140,31 +146,22 @@ and access key f t =
     else Some t.values.{pos}
   in
   let command, retval = f value_opt in
-  begin match command with
-  | Noop -> ()
-  | Delete ->
-      if pos <> end_of_list then
-        let next_data_pos = next_pos t pos in
-        t.nexts.{pos} <- t.first_free;
-        t.first_free <- pos;
-        overwrite_prev_pos next_data_pos;
-        t.count <- t.count - 1
-        (* We don't resize down. This is consistent with Hashtbl. *)
-  | Replace value -> 
-      if pos <> end_of_list
-      then t.values.{pos} <- value
-      else
-        let freepos = t.first_free in
-        if freepos = end_of_list
-        then failwith "TODO: resize the table"
-        else begin
-          t.first_free <- next_pos t freepos;
-          t.nexts.{freepos} <- t.buckets.{bucket};
-          t.buckets.{bucket} <- freepos;
-          t.keys.{freepos} <- key;
-          t.values.{freepos} <- value;
-          t.count <- t.count + 1
-        end
+  begin match value_opt, command with
+  | _, Noop
+  | None, Delete -> ()
+  | Some _, Delete ->
+      let next_data_pos = next_pos t pos in
+      t.nexts.{pos} <- t.first_free;
+      t.first_free <- pos;
+      overwrite_prev_pos next_data_pos;
+      t.count <- t.count - 1
+      (* We don't resize down. This is consistent with Hashtbl. *)
+  | Some _, Replace value ->
+      t.values.{pos} <- value
+  | None, Replace value ->
+      if t.first_free = end_of_list then
+        double_capacity t;
+      add_no_dupe_and_space_check bucket key value t
   end;
   retval
 
